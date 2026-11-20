@@ -34,7 +34,7 @@
 <body>
 <video id="video" playsinline muted autoplay></video>
 <canvas id="masque"></canvas>
-<div id="haut"><span id="infos">…</span><span id="version">web 0.4</span></div>
+<div id="haut"><span id="infos">…</span><span id="version">web 0.5</span></div>
 <div id="message">…</div>
 <div id="bas">
   <canvas id="cadran" width="360" height="360"></canvas>
@@ -48,8 +48,8 @@
   <p>Tiens le téléphone <b>en portrait</b>, sans le tourner pendant la prise.
      Approche-toi jusqu'à ce que la tête <b>remplisse</b> la zone claire, tourne lentement autour,
      et remplis le cadran (centre = sommet, bord = par en dessous : nuque, derrière les oreilles, haut = face). Prends ton temps sur le bas du casque.</p>
-  <label>Photos par secteur <input id="pps" type="number" value="3" min="1" max="10"></label>
-  <label>Photos par secteur, bande basse <input id="ppsBas" type="number" value="5" min="1" max="10"></label>
+  <label>Photos par secteur <input id="pps" type="number" value="2" min="1" max="10"></label>
+  <label>Photos par secteur, bande basse <input id="ppsBas" type="number" value="2" min="1" max="10"></label>
   <label>Rotation max à l'arrêt (°/s) <input id="vmax" type="number" value="12" min="2" max="100"></label>
   <label>Zone claire (% de la largeur) <input id="zone" type="number" value="80" min="30" max="100"></label>
   <label>Intervalle entre photos (s) <input id="interv" type="number" value="0.5" step="0.1" min="0.2"></label>
@@ -66,11 +66,13 @@ const $ = id => document.getElementById(id);
 const D = Math.PI / 180;
 // élévation min, max, nb de secteurs. Bande basse jusqu'à −45° et plus de photos : c'est l'anneau inférieur
 // du casque (nuque, mastoïdes) qui était le moins bien reconstruit (essai du 20/11, 108 photos).
-const BANDES = [[-45, 0, 12], [0, 30, 12], [30, 60, 8], [60, 90.1, 4]];
+// 20/11 (web 0.3) : 3 photos d'un même secteur à 5° l'une de l'autre en médiane, prises en 1 s : redondantes.
+// D'où 2 fois plus de secteurs en azimut, 2 photos chacun : plus de points de vue pour à peu près autant de photos.
+const BANDES = [[-45, 0, 24], [0, 30, 24], [30, 60, 16], [60, 90.1, 8]];
 const NSECT = BANDES.reduce((s, b) => s + b[2], 0);
 const cible = s => s < BANDES[0][2] ? R.ppsBas : R.pps;  // photos voulues dans le secteur s
 
-let R = { pps: 3, ppsBas: 5, vmax: 12, amax: 0.6, zone: 0.8, interv: 0.5 };
+let R = { pps: 2, ppsBas: 2, vmax: 12, amax: 0.6, zone: 0.8, interv: 0.5 };
 let piste = null, orient = null, vitesse = 0, accel = 0, lentDepuis = 0, infosCam = "";
 let etat = "pret";  // pret | capture | export
 // photos gardées par secteur : {nom, blob, net, j} ; dans un secteur plein, une photo plus nette remplace la moins nette
@@ -254,7 +256,7 @@ async function preparerExport() {
   for (const p of photos) fichiers[`${dossier}/${p.nom}`] = [new Uint8Array(await p.blob.arrayBuffer()), { level: 0 }];
   fichiers[`${dossier}/poses.jsonl`] = enc.encode(photos.map(p => JSON.stringify(p.j)).join("\n") + "\n");
   fichiers[`${dossier}/session.json`] = enc.encode(JSON.stringify({
-    version_app: "web 0.4", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
+    version_app: "web 0.5", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
     convention: "Mode capteurs, sans suivi AR. alpha, beta, gamma : DeviceOrientationEvent (degrés, repère W3C " +
       "x est, y nord, z haut ; alpha relatif sur iOS). elevation, azimut : position de la caméra vue du centre de " +
       "la tête, déduite de l'axe optique en supposant que la caméra vise ce centre ; azimut 0 = face au départ.",
