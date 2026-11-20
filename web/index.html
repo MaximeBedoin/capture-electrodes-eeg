@@ -34,7 +34,7 @@
 <body>
 <video id="video" playsinline muted autoplay></video>
 <canvas id="masque"></canvas>
-<div id="haut"><span id="infos">…</span><span id="version">web 0.1</span></div>
+<div id="haut"><span id="infos">…</span><span id="version">web 0.2</span></div>
 <div id="message">…</div>
 <div id="bas">
   <canvas id="cadran" width="360" height="360"></canvas>
@@ -45,8 +45,9 @@
   <h2>Capture EEG (version web)</h2>
   <p>Prise de vue guidée pour reconstruire le casque EEG en 3D. Tout reste sur le téléphone :
      aucune image n'est envoyée sur internet.</p>
-  <p>Garde la tête dans la zone claire, tourne lentement autour, et remplis le cadran
-     (centre = sommet, bord = sous le menton et la nuque, haut = face).</p>
+  <p>Tiens le téléphone <b>en portrait</b>, sans le tourner pendant la prise.
+     Approche-toi jusqu'à ce que la tête <b>remplisse</b> la zone claire, tourne lentement autour,
+     et remplis le cadran (centre = sommet, bord = sous le menton et la nuque, haut = face).</p>
   <label>Photos par secteur <input id="pps" type="number" value="3" min="1" max="10"></label>
   <label>Vitesse max (°/s) <input id="vmax" type="number" value="30" min="5" max="300"></label>
   <label>Zone claire (% de la largeur) <input id="zone" type="number" value="80" min="30" max="100"></label>
@@ -69,7 +70,10 @@ let R = { pps: 3, vmax: 30, zone: 0.8, interv: 0.5 };
 let piste = null, orient = null, vitesse = 0, lentDepuis = 0, infosCam = "";
 let etat = "pret";  // pret | capture | export
 let az0 = 0, compte = new Array(NSECT).fill(0), photos = [], journal = [], nettetes = [];
-let derniere = 0, capturant = false, debut = null, fichierExport = null;
+let derniere = 0, capturant = false, debut = null, fichierExport = null, orientation = "";
+
+// orientation du flux vidéo : elle doit rester la même pendant toute la prise (une seule caméra pour COLMAP)
+const orientationFlux = () => { const v = $("video"); return v.videoWidth > v.videoHeight ? "paysage" : "portrait"; };
 
 function dire(m, alerte) {
   const e = $("message");
@@ -138,7 +142,7 @@ $("ouvrir").onclick = async () => {
     await exposition();
     try { await navigator.wakeLock?.request("screen"); } catch (e) {}
     $("accueil").style.display = "none";
-    dire("Face au visage, tête dans la zone claire, puis Démarrer", false);
+    dire("En portrait, face au visage, la tête remplit la zone claire, puis Démarrer", false);
     requestAnimationFrame(boucle);
   } catch (e) {
     $("erreur").textContent = "Erreur : " + e.message;
@@ -151,6 +155,7 @@ $("bouton").onclick = async () => {
     az0 = 0;
     az0 = angles(orient)[1];  // azimut 0 = face, au départ
     compte.fill(0); photos = []; journal = []; nettetes = []; debut = new Date();
+    orientation = orientationFlux();
     $("photos").textContent = "0 photo";
     etat = "capture"; $("bouton").textContent = "Terminer"; $("bouton").className = "stop";
   } else if (etat === "capture") {
@@ -169,6 +174,7 @@ function boucle(t) {
   dessinerCadran(pos);
   $("infos").textContent = infosCam + (orient ? "" : " · capteurs muets");
   if (etat !== "capture") return;
+  if (orientationFlux() !== orientation) { dire(`Remets le téléphone en ${orientation}`, true); return; }
   if (vitesse > R.vmax) { lentDepuis = t; dire("Trop vite", true); return; }
   const s = secteur(pos);
   if (s < 0) { dire("Trop bas : remonte", true); return; }
@@ -177,7 +183,7 @@ function boucle(t) {
     dire(manquants ? `Zone couverte : va vers le rouge (${manquants} secteurs)` : "Couverture complète ✓ tu peux terminer", false);
     return;
   }
-  dire(`Tête dans la zone claire, continue doucement (${manquants} secteurs)`, false);
+  dire(`Tête qui remplit la zone claire, continue doucement (${manquants} secteurs)`, false);
   if (!capturant && t - lentDepuis > 250 && (t - derniere) / 1000 >= R.interv) {
     derniere = t;
     capturer(s, pos);
@@ -202,7 +208,7 @@ async function capturer(s, pos) {
   capturant = true;
   try {
     const v = $("video"), W = v.videoWidth, H = v.videoHeight, n = 256, cote = Math.min(W, H) * 0.6;
-    if (!W || !H) return;  // flux pas encore prêt
+    if (!W || !H || orientationFlux() !== orientation) return;  // flux pas prêt, ou téléphone tourné
     petit.width = petit.height = n;
     const cx = petit.getContext("2d", { willReadFrequently: true });
     cx.drawImage(v, (W - cote) / 2, (H - cote) / 2, cote, cote, 0, 0, n, n);
@@ -237,7 +243,7 @@ async function preparerExport() {
   for (const [nom, blob] of photos) fichiers[`${dossier}/${nom}`] = [new Uint8Array(await blob.arrayBuffer()), { level: 0 }];
   fichiers[`${dossier}/poses.jsonl`] = enc.encode(journal.map(j => JSON.stringify(j)).join("\n") + "\n");
   fichiers[`${dossier}/session.json`] = enc.encode(JSON.stringify({
-    version_app: "web 0.1", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
+    version_app: "web 0.2", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
     convention: "Mode capteurs, sans suivi AR. alpha, beta, gamma : DeviceOrientationEvent (degrés, repère W3C " +
       "x est, y nord, z haut ; alpha relatif sur iOS). elevation, azimut : position de la caméra vue du centre de " +
       "la tête, déduite de l'axe optique en supposant que la caméra vise ce centre ; azimut 0 = face au départ.",
