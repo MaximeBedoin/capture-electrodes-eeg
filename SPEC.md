@@ -11,8 +11,8 @@ de reconstruction (COLMAP, détection et nommage des électrodes) lise l'une ou 
 2. À chaque image du suivi AR, dans cet ordre (le premier problème trouvé est affiché) :
    - suivi AR perdu → « Suivi perdu » ;
    - distance caméra – surface de la tête (`|caméra − centre| − rayonTete`) hors de
-     [`distMin`, `distMax`] → « Éloigne-toi » / « Rapproche-toi » ;
-   - angle entre l'axe optique et la direction du centre > `viseeMax` → « Vise le centre » ;
+     [`distMin`, `distMax`], ou angle entre l'axe optique et la direction du centre > `viseeMax`
+     → « Cale les pointillés sur la zone claire » ;
    - vitesse angulaire de la caméra autour du centre (lissée, facteur 0,8) > `vitesseMax` °/s → « Trop vite » ;
    - élévation < −30° → « Trop bas » ;
    - secteur déjà plein → « Zone couverte : va vers le rouge » ;
@@ -27,9 +27,13 @@ de reconstruction (COLMAP, détection et nommage des électrodes) lise l'une ou 
    | 60° à 90° (sommet, vu sous plusieurs angles) | 4 |
 
    Un secteur est plein à `photosParSecteur` photos.
-4. Exposition manuelle imposée : temps de pose 1/`vitesse` s, ISO `iso` (bornés par la caméra).
+4. Cadrage visuel : l'écran est grisé sauf une zone claire centrale, de la taille qu'aurait la tête
+   (sphère de rayon `rayonTete`) à `distanceCible` cm. Le contour de la tête, projeté depuis le suivi AR,
+   est dessiné en pointillés : vert si son rayon est à moins de 20 % de celui de la zone et son centre
+   à moins de 25 % du rayon du centre de l'écran, orange sinon.
+5. Exposition manuelle imposée : temps de pose 1/`vitesse` s, ISO `iso` (bornés par la caméra).
 
-Valeurs par défaut : vitesse 250, iso 400, distMin 20, distMax 45, rayonTete 10, distanceDepart 35,
+Valeurs par défaut : vitesse 250, iso 400, distMin 20, distMax 35, distanceCible 27, rayonTete 10, distanceDepart 30,
 photosParSecteur 3, intervalle 0,5, vitesseMax 30, viseeMax 25.
 
 ## Sortie : un dossier `capture_AAAAMMJJ_HHMMSS/`

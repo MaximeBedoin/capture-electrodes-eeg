@@ -6,9 +6,10 @@ enum Reglages {
         "vitesse": 250,          // temps de pose : 1/vitesse s
         "iso": 400,
         "distMin": 20,           // distance caméra – surface de la tête, cm
-        "distMax": 45,
+        "distMax": 35,
+        "distanceCible": 27,     // distance idéale : taille de la zone claire à l'écran
         "rayonTete": 10,         // rayon approximatif tête + casque, cm
-        "distanceDepart": 35,    // distance au front quand on touche Démarrer, cm
+        "distanceDepart": 30,    // distance au front quand on touche Démarrer, cm
         "photosParSecteur": 3,
         "intervalle": 0.5,       // s minimum entre deux photos
         "vitesseMax": 30,        // °/s autour de la tête au-delà : flou probable
@@ -21,6 +22,7 @@ enum Reglages {
     static var iso: Double { v("iso") }
     static var distMin: Float { Float(v("distMin")) }
     static var distMax: Float { Float(v("distMax")) }
+    static var distanceCible: Float { Float(v("distanceCible")) }
     static var rayonTete: Float { Float(v("rayonTete")) }
     static var distanceDepart: Float { Float(v("distanceDepart")) }
     static var photosParSecteur: Int { Int(v("photosParSecteur")) }
@@ -34,9 +36,10 @@ struct ReglagesView: View {
     @AppStorage("vitesse") var vitesse = 250.0
     @AppStorage("iso") var iso = 400.0
     @AppStorage("distMin") var distMin = 20.0
-    @AppStorage("distMax") var distMax = 45.0
+    @AppStorage("distMax") var distMax = 35.0
+    @AppStorage("distanceCible") var distanceCible = 27.0
     @AppStorage("rayonTete") var rayonTete = 10.0
-    @AppStorage("distanceDepart") var distanceDepart = 35.0
+    @AppStorage("distanceDepart") var distanceDepart = 30.0
     @AppStorage("photosParSecteur") var photosParSecteur = 3.0
     @AppStorage("intervalle") var intervalle = 0.5
     @AppStorage("vitesseMax") var vitesseMax = 30.0
@@ -53,6 +56,7 @@ struct ReglagesView: View {
                 Section("Distance à la tête (cm)") {
                     Stepper("Minimum : \(Int(distMin))", value: $distMin, in: 5...100)
                     Stepper("Maximum : \(Int(distMax))", value: $distMax, in: 10...150)
+                    Stepper("Idéale (zone claire) : \(Int(distanceCible))", value: $distanceCible, in: 10...100)
                     Stepper("Rayon tête + casque : \(Int(rayonTete))", value: $rayonTete, in: 6...15)
                     Stepper("Distance au départ : \(Int(distanceDepart))", value: $distanceDepart, in: 10...100)
                 }

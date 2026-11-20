@@ -32,6 +32,38 @@ struct Couverture {
     var manquants: Int { compte.filter { $0 < Reglages.photosParSecteur }.count }
 }
 
+/// Tête projetée à l'écran (pixels de la vue) ; cible = rayon qu'elle aurait à la distance idéale.
+struct CercleTete {
+    let centre: CGPoint
+    let rayon: CGFloat
+    let cible: CGFloat
+}
+
+/// Écran grisé sauf une zone claire au centre (taille de la tête à la distance idéale) ;
+/// pointillés = où l'app situe la tête, verts quand ils coïncident avec la zone claire.
+struct Masque: View {
+    let tete: CercleTete?
+
+    var body: some View {
+        Canvas { ctx, taille in
+            let c = CGPoint(x: taille.width / 2, y: taille.height / 2)
+            let rc = tete?.cible ?? taille.width * 0.32
+            let zone = CGRect(x: c.x - rc, y: c.y - rc, width: 2 * rc, height: 2 * rc)
+            var gris = Path(CGRect(origin: .zero, size: taille))
+            gris.addEllipse(in: zone)
+            ctx.fill(gris, with: .color(.black.opacity(0.55)), style: FillStyle(eoFill: true))
+            ctx.stroke(Path(ellipseIn: zone), with: .color(.white.opacity(0.8)), lineWidth: 2)
+            if let t = tete {
+                let ok = abs(t.rayon - rc) < 0.2 * rc && hypot(t.centre.x - c.x, t.centre.y - c.y) < 0.25 * rc
+                let r = CGRect(x: t.centre.x - t.rayon, y: t.centre.y - t.rayon, width: 2 * t.rayon, height: 2 * t.rayon)
+                ctx.stroke(Path(ellipseIn: r), with: .color(ok ? .green : .orange),
+                           style: StrokeStyle(lineWidth: 3, dash: [10, 7]))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 /// Cadran vu du dessus : centre = sommet de la tête, bord = 30° sous l'horizontale ; haut = face.
 /// Rouge : secteur vide ; vert : assez de photos. Point blanc : position actuelle du téléphone.
 struct Cadran: View {

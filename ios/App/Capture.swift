@@ -9,7 +9,7 @@ import simd
 /// Sortie : Documents/capture_<date>/ avec img_NNNN.jpg, poses.jsonl (une ligne par photo), session.json.
 final class Capture: NSObject, ObservableObject, ARSessionDelegate {
     let session = ARSession()
-    @Published var message = "Téléphone à environ 35 cm du front, visant le centre de la tête, puis Démarrer"
+    @Published var message = "Cale la tête dans la zone claire, téléphone à environ 30 cm du front, puis Démarrer"
     @Published var alerte = false
     @Published var distanceCm: Int?
     @Published var enCours = false
@@ -17,6 +17,8 @@ final class Capture: NSObject, ObservableObject, ARSessionDelegate {
     @Published var position: SIMD2<Float>?
     @Published var nbPhotos = 0
     @Published var reglagesCamera = ""
+    @Published var tete: CercleTete?
+    var tailleVue: CGSize = .zero   // taille de la vue caméra à l'écran, fixée par ContentView
 
     private var centre: simd_float3?
     private var dossier: URL?
@@ -112,6 +114,7 @@ final class Capture: NSObject, ObservableObject, ARSessionDelegate {
 
     func terminer() {
         enCours = false
+        tete = nil
         let j = journal
         journal = nil
         ecriture.async { try? j?.close() }
@@ -144,12 +147,25 @@ final class Capture: NSObject, ObservableObject, ARSessionDelegate {
         dernierePose = (t, dir)
         let visee = acos(max(-1, min(1, simd_dot(p.avant, -dir)))) * 180 / .pi
 
+        // contour de la tête projeté à l'écran, et taille qu'il aurait à la distance idéale
+        if visee < 80 && tailleVue != .zero {
+            let droite = simd_normalize(simd_make_float3(frame.camera.transform.columns.0))
+            let pc = frame.camera.projectPoint(c, orientation: .portrait, viewportSize: tailleVue)
+            let pb = frame.camera.projectPoint(c + droite * Reglages.rayonTete / 100, orientation: .portrait,
+                                               viewportSize: tailleVue)
+            let r = hypot(pb.x - pc.x, pb.y - pc.y)
+            tete = CercleTete(centre: pc, rayon: r,
+                              cible: r * CGFloat(dCentre * 100 / (Reglages.distanceCible + Reglages.rayonTete)))
+        } else {
+            tete = nil
+        }
+
         guard case .normal = frame.camera.trackingState else {
             dire("Suivi perdu : ralentis et garde le décor dans le champ", alerte: true); return
         }
-        if dist < Reglages.distMin { dire("Éloigne-toi", alerte: true); return }
-        if dist > Reglages.distMax { dire("Rapproche-toi", alerte: true); return }
-        if visee > Reglages.viseeMax { dire("Vise le centre de la tête", alerte: true); return }
+        if dist < Reglages.distMin || dist > Reglages.distMax || visee > Reglages.viseeMax {
+            dire("Cale les pointillés sur la zone claire", alerte: true); return
+        }
         if vitesse > Reglages.vitesseMax { dire("Trop vite", alerte: true); return }
         guard let s = couverture.secteur(dir) else { dire("Trop bas : remonte", alerte: true); return }
         let manquants = couverture.manquants

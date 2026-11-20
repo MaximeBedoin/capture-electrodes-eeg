@@ -24,7 +24,15 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            VueCamera(session: cap.session).ignoresSafeArea()
+            GeometryReader { g in
+                ZStack {
+                    VueCamera(session: cap.session)
+                    Masque(tete: cap.tete)
+                }
+                .onAppear { cap.tailleVue = g.size }
+                .onChange(of: g.size) { cap.tailleVue = $0 }
+            }
+            .ignoresSafeArea()
             VStack(spacing: 12) {
                 HStack {
                     Text(cap.reglagesCamera).font(.caption)
@@ -42,7 +50,7 @@ struct ContentView: View {
                     .cornerRadius(12)
                     .padding(.horizontal)
                 if cap.enCours, let d = cap.distanceCm {
-                    Text("\(d) cm").font(.title2.monospacedDigit())
+                    Text("\(d) cm").font(.caption.monospacedDigit())
                 }
                 Spacer()
                 HStack(alignment: .bottom) {
