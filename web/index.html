@@ -34,7 +34,7 @@
 <body>
 <video id="video" playsinline muted autoplay></video>
 <canvas id="masque"></canvas>
-<div id="haut"><span id="infos">…</span><span id="version">web 0.2</span></div>
+<div id="haut"><span id="infos">…</span><span id="version">web 0.3</span></div>
 <div id="message">…</div>
 <div id="bas">
   <canvas id="cadran" width="360" height="360"></canvas>
@@ -47,8 +47,9 @@
      aucune image n'est envoyée sur internet.</p>
   <p>Tiens le téléphone <b>en portrait</b>, sans le tourner pendant la prise.
      Approche-toi jusqu'à ce que la tête <b>remplisse</b> la zone claire, tourne lentement autour,
-     et remplis le cadran (centre = sommet, bord = sous le menton et la nuque, haut = face).</p>
+     et remplis le cadran (centre = sommet, bord = par en dessous : nuque, derrière les oreilles, haut = face). Prends ton temps sur le bas du casque.</p>
   <label>Photos par secteur <input id="pps" type="number" value="3" min="1" max="10"></label>
+  <label>Photos par secteur, bande basse <input id="ppsBas" type="number" value="5" min="1" max="10"></label>
   <label>Vitesse max (°/s) <input id="vmax" type="number" value="30" min="5" max="300"></label>
   <label>Zone claire (% de la largeur) <input id="zone" type="number" value="80" min="30" max="100"></label>
   <label>Intervalle entre photos (s) <input id="interv" type="number" value="0.5" step="0.1" min="0.2"></label>
@@ -63,10 +64,13 @@
 // l'orientation du téléphone, en supposant qu'il vise le centre de la tête. Mêmes secteurs que SPEC.md.
 const $ = id => document.getElementById(id);
 const D = Math.PI / 180;
-const BANDES = [[-30, 0, 12], [0, 30, 12], [30, 60, 8], [60, 90.1, 4]];  // élévation min, max, nb de secteurs
+// élévation min, max, nb de secteurs. Bande basse jusqu'à −45° et plus de photos : c'est l'anneau inférieur
+// du casque (nuque, mastoïdes) qui était le moins bien reconstruit (essai du 20/11, 108 photos).
+const BANDES = [[-45, 0, 12], [0, 30, 12], [30, 60, 8], [60, 90.1, 4]];
 const NSECT = BANDES.reduce((s, b) => s + b[2], 0);
+const cible = s => s < BANDES[0][2] ? R.ppsBas : R.pps;  // photos voulues dans le secteur s
 
-let R = { pps: 3, vmax: 30, zone: 0.8, interv: 0.5 };
+let R = { pps: 3, ppsBas: 5, vmax: 30, zone: 0.8, interv: 0.5 };
 let piste = null, orient = null, vitesse = 0, lentDepuis = 0, infosCam = "";
 let etat = "pret";  // pret | capture | export
 let az0 = 0, compte = new Array(NSECT).fill(0), photos = [], journal = [], nettetes = [];
@@ -121,7 +125,7 @@ async function exposition() {
 
 $("ouvrir").onclick = async () => {
   try {
-    R = { pps: +$("pps").value, vmax: +$("vmax").value, zone: +$("zone").value / 100, interv: +$("interv").value };
+    R = { pps: +$("pps").value, ppsBas: +$("ppsBas").value, vmax: +$("vmax").value, zone: +$("zone").value / 100, interv: +$("interv").value };
     // iOS : autorisation des capteurs, à demander dans le geste de l'utilisateur
     if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
       if (await DeviceOrientationEvent.requestPermission() !== "granted") throw new Error("capteurs d'orientation refusés");
@@ -178,8 +182,8 @@ function boucle(t) {
   if (vitesse > R.vmax) { lentDepuis = t; dire("Trop vite", true); return; }
   const s = secteur(pos);
   if (s < 0) { dire("Trop bas : remonte", true); return; }
-  const manquants = compte.filter(c => c < R.pps).length;
-  if (compte[s] >= R.pps) {
+  const manquants = compte.filter((c, i) => c < cible(i)).length;
+  if (compte[s] >= cible(s)) {
     dire(manquants ? `Zone couverte : va vers le rouge (${manquants} secteurs)` : "Couverture complète ✓ tu peux terminer", false);
     return;
   }
@@ -243,7 +247,7 @@ async function preparerExport() {
   for (const [nom, blob] of photos) fichiers[`${dossier}/${nom}`] = [new Uint8Array(await blob.arrayBuffer()), { level: 0 }];
   fichiers[`${dossier}/poses.jsonl`] = enc.encode(journal.map(j => JSON.stringify(j)).join("\n") + "\n");
   fichiers[`${dossier}/session.json`] = enc.encode(JSON.stringify({
-    version_app: "web 0.2", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
+    version_app: "web 0.3", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
     convention: "Mode capteurs, sans suivi AR. alpha, beta, gamma : DeviceOrientationEvent (degrés, repère W3C " +
       "x est, y nord, z haut ; alpha relatif sur iOS). elevation, azimut : position de la caméra vue du centre de " +
       "la tête, déduite de l'axe optique en supposant que la caméra vise ce centre ; azimut 0 = face au départ.",
@@ -279,10 +283,10 @@ function dessinerMasque() {
   x.beginPath(); x.arc(w / 2, h / 2, r, 0, 2 * Math.PI); x.stroke();
 }
 
-// cadran vu du dessus : centre = sommet, bord = 30° sous l'horizontale, haut = face ; rouge → vert
+// cadran vu du dessus : centre = sommet, bord = 45° sous l'horizontale, haut = face ; rouge → vert
 function dessinerCadran(pos) {
   const c = $("cadran"), x = c.getContext("2d"), S = c.width, C = S / 2, Rr = C - 14;
-  const rayon = e => (90 - Math.min(e, 90)) / 120 * Rr;
+  const rayon = e => (90 - Math.min(e, 90)) / 135 * Rr;
   const pt = (r, deg) => [C + r * Math.cos(deg * D), C + r * Math.sin(deg * D)];
   x.clearRect(0, 0, S, S);
   let d = 0;
@@ -293,7 +297,7 @@ function dessinerCadran(pos) {
       for (let i = 0; i <= 8; i++) { const p = pt(rayon(mx), a0 + (a1 - a0) * i / 8); i ? x.lineTo(...p) : x.moveTo(...p); }
       for (let i = 8; i >= 0; i--) x.lineTo(...pt(rayon(mn), a0 + (a1 - a0) * i / 8));
       x.closePath();
-      const f = Math.min(1, compte[d + k] / R.pps);
+      const f = Math.min(1, compte[d + k] / cible(d + k));
       x.fillStyle = `hsla(${f * 120}, 85%, 45%, .8)`; x.fill();
       x.strokeStyle = "rgba(255,255,255,.6)"; x.lineWidth = 1.5; x.stroke();
     }

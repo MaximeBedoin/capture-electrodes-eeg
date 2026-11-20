@@ -14,19 +14,20 @@ de reconstruction (COLMAP, détection et nommage des électrodes) lise l'une ou 
      [`distMin`, `distMax`], ou angle entre l'axe optique et la direction du centre > `viseeMax`
      → « Cale les pointillés sur la zone claire » ;
    - vitesse angulaire de la caméra autour du centre (lissée, facteur 0,8) > `vitesseMax` °/s → « Trop vite » ;
-   - élévation < −30° → « Trop bas » ;
+   - élévation < −45° → « Trop bas » ;
    - secteur déjà plein → « Zone couverte : va vers le rouge » ;
    - sinon, une photo pleine résolution est prise si la précédente date de plus de `intervalle` s.
 3. Secteurs (élévation de la caméra vue du centre de la tête, gravité vers le bas ; azimut 0 = départ) :
 
    | bande d'élévation | secteurs d'azimut |
    |---|---|
-   | −30° à 0° (menton, nuque, sous les oreilles) | 12 |
+   | −45° à 0° (nuque, sous les oreilles, inion) | 12 |
    | 0° à 30° | 12 |
    | 30° à 60° | 8 |
    | 60° à 90° (sommet, vu sous plusieurs angles) | 4 |
 
-   Un secteur est plein à `photosParSecteur` photos.
+   Un secteur est plein à `photosParSecteur` photos (`photosParSecteurBas` dans la bande basse, la plus mal
+   reconstruite à l'essai du 20/11). L'app iOS v0.1 suit encore l'ancienne bande (−30°, 3 photos).
 4. Cadrage visuel : l'écran est grisé sauf une zone claire centrale, de la taille qu'aurait la tête
    (sphère de rayon `rayonTete`) à `distanceCible` cm. Le contour de la tête, projeté depuis le suivi AR,
    est dessiné en pointillés : vert si son rayon est à moins de 20 % de celui de la zone et son centre
@@ -34,7 +35,7 @@ de reconstruction (COLMAP, détection et nommage des électrodes) lise l'une ou 
 5. Exposition manuelle imposée : temps de pose 1/`vitesse` s, ISO `iso` (bornés par la caméra).
 
 Valeurs par défaut : vitesse 250, iso 400, distMin 20, distMax 35, distanceCible 27, rayonTete 10, distanceDepart 30,
-photosParSecteur 3, intervalle 0,5, vitesseMax 30, viseeMax 25.
+photosParSecteur 3, photosParSecteurBas 5, intervalle 0,5, vitesseMax 30, viseeMax 25.
 
 ## Sortie : un dossier `capture_AAAAMMJJ_HHMMSS/`
 
