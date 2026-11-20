@@ -34,7 +34,7 @@
 <body>
 <video id="video" playsinline muted autoplay></video>
 <canvas id="masque"></canvas>
-<div id="haut"><span id="infos">…</span><span id="version">web 0.3</span></div>
+<div id="haut"><span id="infos">…</span><span id="version">web 0.4</span></div>
 <div id="message">…</div>
 <div id="bas">
   <canvas id="cadran" width="360" height="360"></canvas>
@@ -50,7 +50,7 @@
      et remplis le cadran (centre = sommet, bord = par en dessous : nuque, derrière les oreilles, haut = face). Prends ton temps sur le bas du casque.</p>
   <label>Photos par secteur <input id="pps" type="number" value="3" min="1" max="10"></label>
   <label>Photos par secteur, bande basse <input id="ppsBas" type="number" value="5" min="1" max="10"></label>
-  <label>Vitesse max (°/s) <input id="vmax" type="number" value="30" min="5" max="300"></label>
+  <label>Rotation max à l'arrêt (°/s) <input id="vmax" type="number" value="12" min="2" max="100"></label>
   <label>Zone claire (% de la largeur) <input id="zone" type="number" value="80" min="30" max="100"></label>
   <label>Intervalle entre photos (s) <input id="interv" type="number" value="0.5" step="0.1" min="0.2"></label>
   <button id="ouvrir">Ouvrir la caméra</button>
@@ -70,10 +70,12 @@ const BANDES = [[-45, 0, 12], [0, 30, 12], [30, 60, 8], [60, 90.1, 4]];
 const NSECT = BANDES.reduce((s, b) => s + b[2], 0);
 const cible = s => s < BANDES[0][2] ? R.ppsBas : R.pps;  // photos voulues dans le secteur s
 
-let R = { pps: 3, ppsBas: 5, vmax: 30, zone: 0.8, interv: 0.5 };
-let piste = null, orient = null, vitesse = 0, lentDepuis = 0, infosCam = "";
+let R = { pps: 3, ppsBas: 5, vmax: 12, amax: 0.6, zone: 0.8, interv: 0.5 };
+let piste = null, orient = null, vitesse = 0, accel = 0, lentDepuis = 0, infosCam = "";
 let etat = "pret";  // pret | capture | export
-let az0 = 0, compte = new Array(NSECT).fill(0), photos = [], journal = [], nettetes = [];
+// photos gardées par secteur : {nom, blob, net, j} ; dans un secteur plein, une photo plus nette remplace la moins nette
+let az0 = 0, secteurs = Array.from({ length: NSECT }, () => []), nPris = 0, remplacees = 0;
+const nb = i => secteurs[i].length;
 let derniere = 0, capturant = false, debut = null, fichierExport = null, orientation = "";
 
 // orientation du flux vidéo : elle doit rester la même pendant toute la prise (une seule caméra pour COLMAP)
@@ -125,7 +127,7 @@ async function exposition() {
 
 $("ouvrir").onclick = async () => {
   try {
-    R = { pps: +$("pps").value, ppsBas: +$("ppsBas").value, vmax: +$("vmax").value, zone: +$("zone").value / 100, interv: +$("interv").value };
+    R = { ...R, pps: +$("pps").value, ppsBas: +$("ppsBas").value, vmax: +$("vmax").value, zone: +$("zone").value / 100, interv: +$("interv").value };
     // iOS : autorisation des capteurs, à demander dans le geste de l'utilisateur
     if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
       if (await DeviceOrientationEvent.requestPermission() !== "granted") throw new Error("capteurs d'orientation refusés");
@@ -137,6 +139,8 @@ $("ouvrir").onclick = async () => {
     addEventListener("devicemotion", e => {
       const r = e.rotationRate;
       if (r && r.alpha !== null) vitesse = 0.7 * vitesse + 0.3 * Math.hypot(r.alpha, r.beta, r.gamma);
+      const a = e.acceleration;  // sans la gravité, m/s² (null sur certains appareils)
+      if (a && a.x !== null) accel = 0.7 * accel + 0.3 * Math.hypot(a.x, a.y, a.z);
     });
     const flux = await navigator.mediaDevices.getUserMedia({ audio: false,
       video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
@@ -158,7 +162,7 @@ $("bouton").onclick = async () => {
     if (!orient) { dire("Capteurs muets : bouge un peu le téléphone", true); return; }
     az0 = 0;
     az0 = angles(orient)[1];  // azimut 0 = face, au départ
-    compte.fill(0); photos = []; journal = []; nettetes = []; debut = new Date();
+    secteurs = Array.from({ length: NSECT }, () => []); nPris = 0; remplacees = 0; debut = new Date();
     orientation = orientationFlux();
     $("photos").textContent = "0 photo";
     etat = "capture"; $("bouton").textContent = "Terminer"; $("bouton").className = "stop";
@@ -179,22 +183,23 @@ function boucle(t) {
   $("infos").textContent = infosCam + (orient ? "" : " · capteurs muets");
   if (etat !== "capture") return;
   if (orientationFlux() !== orientation) { dire(`Remets le téléphone en ${orientation}`, true); return; }
-  if (vitesse > R.vmax) { lentDepuis = t; dire("Trop vite", true); return; }
+  // photo seulement téléphone immobile (rotation ET accélération faibles) depuis au moins 0,4 s
+  if (vitesse > R.vmax || accel > R.amax) lentDepuis = t;
+  if (vitesse > 3 * R.vmax) { dire("Trop vite", true); return; }
   const s = secteur(pos);
   if (s < 0) { dire("Trop bas : remonte", true); return; }
-  const manquants = compte.filter((c, i) => c < cible(i)).length;
-  if (compte[s] >= cible(s)) {
-    dire(manquants ? `Zone couverte : va vers le rouge (${manquants} secteurs)` : "Couverture complète ✓ tu peux terminer", false);
-    return;
-  }
-  dire(`Tête qui remplit la zone claire, continue doucement (${manquants} secteurs)`, false);
-  if (!capturant && t - lentDepuis > 250 && (t - derniere) / 1000 >= R.interv) {
+  const manquants = secteurs.filter((L, i) => L.length < cible(i)).length;
+  const plein = nb(s) >= cible(s);
+  if (plein) dire(manquants ? `Zone couverte : va vers le rouge (${manquants} secteurs)` : "Couverture complète ✓ tu peux terminer", false);
+  else if (t - lentDepuis < 400) dire("Arrête-toi : immobile une demi-seconde", false);
+  else dire(`Tête qui remplit la zone claire (${manquants} secteurs)`, false);
+  if (!capturant && t - lentDepuis > 400 && (t - derniere) / 1000 >= R.interv) {
     derniere = t;
-    capturer(s, pos);
+    capturer(s, pos, plein);
   }
 }
 
-// netteté = variance du laplacien sur le centre de l'image, réduit à 256 px
+// netteté = variance du laplacien sur un carré de 512 px au centre, EN PLEINE RÉSOLUTION (réduire masquait le flou)
 const petit = document.createElement("canvas"), grand = document.createElement("canvas");
 function nettete(d, n) {
   const g = new Float32Array(n * n);
@@ -206,31 +211,32 @@ function nettete(d, n) {
   }
   return s2 / m - (s / m) ** 2;
 }
-const mediane = a => a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : 0;
 
-async function capturer(s, pos) {
+async function capturer(s, pos, plein) {
   capturant = true;
   try {
-    const v = $("video"), W = v.videoWidth, H = v.videoHeight, n = 256, cote = Math.min(W, H) * 0.6;
+    const v = $("video"), W = v.videoWidth, H = v.videoHeight, n = 512;
     if (!W || !H || orientationFlux() !== orientation) return;  // flux pas prêt, ou téléphone tourné
     petit.width = petit.height = n;
     const cx = petit.getContext("2d", { willReadFrequently: true });
-    cx.drawImage(v, (W - cote) / 2, (H - cote) / 2, cote, cote, 0, 0, n, n);
+    cx.drawImage(v, (W - n) / 2, (H - n) / 2, n, n, 0, 0, n, n);
     const net = nettete(cx.getImageData(0, 0, n, n).data, n);
-    if (nettetes.length >= 5 && net < 0.5 * mediane(nettetes)) return;  // floue : on attend la suivante
-    nettetes.push(net);
+    // comparaison dans le même secteur (même point de vue, même contenu) ; on n'encode que si on garde
+    const L = secteurs[s];
+    const pire = L.reduce((a, b) => (a && a.net < b.net ? a : b), null);
+    if (plein ? net < 1.15 * pire.net : L.length && net < 0.6 * Math.max(...L.map(q => q.net))) return;
     grand.width = W; grand.height = H;
     grand.getContext("2d").drawImage(v, 0, 0);
     const blob = await new Promise(r => grand.toBlob(r, "image/jpeg", 0.92));
-    const nom = `img_${String(photos.length + 1).padStart(4, "0")}.jpg`;
-    photos.push([nom, blob]);
-    compte[s]++;
-    journal.push({ image: nom, t_ms: Math.round(performance.now()), largeur: W, hauteur: H,
+    const nom = `img_${String(++nPris).padStart(4, "0")}.jpg`;
+    const p = { nom, blob, net, j: { image: nom, t_ms: Math.round(performance.now()), largeur: W, hauteur: H,
       alpha: orient.alpha, beta: orient.beta, gamma: orient.gamma,
       elevation: +pos[0].toFixed(1), azimut: +pos[1].toFixed(1), secteur: s,
-      nettete: +net.toFixed(1), vitesse_deg_s: +vitesse.toFixed(1) });
+      nettete: +net.toFixed(1), vitesse_deg_s: +vitesse.toFixed(1), accel_m_s2: +accel.toFixed(2) } };
+    if (plein) { L[L.indexOf(pire)] = p; remplacees++; } else L.push(p);
     navigator.vibrate?.(30);
-    $("photos").textContent = `${photos.length} photos`;
+    const total = secteurs.reduce((a, M) => a + M.length, 0);
+    $("photos").textContent = `${total} photos` + (remplacees ? ` (${remplacees} remplacées)` : "");
   } finally {
     capturant = false;
   }
@@ -243,11 +249,12 @@ function horodatage(d) {
 
 async function preparerExport() {
   dire("Préparation du fichier…", false);
-  const dossier = `capture_${horodatage(debut)}`, fichiers = {}, enc = new TextEncoder();
-  for (const [nom, blob] of photos) fichiers[`${dossier}/${nom}`] = [new Uint8Array(await blob.arrayBuffer()), { level: 0 }];
-  fichiers[`${dossier}/poses.jsonl`] = enc.encode(journal.map(j => JSON.stringify(j)).join("\n") + "\n");
+  const dossier = `capture_${horodatage(debut || new Date())}`, fichiers = {}, enc = new TextEncoder();
+  const photos = secteurs.flat().sort((a, b) => a.nom < b.nom ? -1 : 1);
+  for (const p of photos) fichiers[`${dossier}/${p.nom}`] = [new Uint8Array(await p.blob.arrayBuffer()), { level: 0 }];
+  fichiers[`${dossier}/poses.jsonl`] = enc.encode(photos.map(p => JSON.stringify(p.j)).join("\n") + "\n");
   fichiers[`${dossier}/session.json`] = enc.encode(JSON.stringify({
-    version_app: "web 0.3", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
+    version_app: "web 0.4", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
     convention: "Mode capteurs, sans suivi AR. alpha, beta, gamma : DeviceOrientationEvent (degrés, repère W3C " +
       "x est, y nord, z haut ; alpha relatif sur iOS). elevation, azimut : position de la caméra vue du centre de " +
       "la tête, déduite de l'axe optique en supposant que la caméra vise ce centre ; azimut 0 = face au départ.",
@@ -297,7 +304,7 @@ function dessinerCadran(pos) {
       for (let i = 0; i <= 8; i++) { const p = pt(rayon(mx), a0 + (a1 - a0) * i / 8); i ? x.lineTo(...p) : x.moveTo(...p); }
       for (let i = 8; i >= 0; i--) x.lineTo(...pt(rayon(mn), a0 + (a1 - a0) * i / 8));
       x.closePath();
-      const f = Math.min(1, compte[d + k] / cible(d + k));
+      const f = Math.min(1, nb(d + k) / cible(d + k));
       x.fillStyle = `hsla(${f * 120}, 85%, 45%, .8)`; x.fill();
       x.strokeStyle = "rgba(255,255,255,.6)"; x.lineWidth = 1.5; x.stroke();
     }
