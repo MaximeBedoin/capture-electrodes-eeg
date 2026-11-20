@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Capture EEG</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
+               font-family: -apple-system, system-ui, sans-serif; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #masque { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #haut { position: fixed; top: 0; left: 0; right: 0; display: flex; justify-content: space-between;
+          padding: calc(env(safe-area-inset-top) + 6px) 12px 6px; background: rgba(0,0,0,.5); font-size: 12px; }
+  #message { position: fixed; top: calc(env(safe-area-inset-top) + 40px); left: 16px; right: 16px;
+             text-align: center; font-weight: 700; font-size: 19px; padding: 10px; border-radius: 12px;
+             background: rgba(40,160,70,.8); }
+  #message.alerte { background: rgba(200,40,40,.85); }
+  #bas { position: fixed; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 12px);
+         display: flex; align-items: flex-end; justify-content: space-between; }
+  #cadran { width: 180px; height: 180px; border-radius: 50%; background: rgba(0,0,0,.35); }
+  #droite { text-align: center; }
+  #photos { margin-bottom: 8px; font-weight: 600; }
+  button { font-size: 18px; padding: 12px 20px; border: 0; border-radius: 12px; background: #2463eb;
+           color: #fff; font-weight: 600; }
+  button.stop { background: #d33; }
+  button.export { background: #1a9a4a; }
+  #accueil { position: fixed; inset: 0; background: #111; padding: 24px; overflow: auto; z-index: 10;
+             padding-top: calc(env(safe-area-inset-top) + 16px); }
+  #accueil label { display: flex; justify-content: space-between; align-items: center; margin: 14px 0; gap: 12px; }
+  #accueil input { width: 80px; font-size: 16px; }
+  #accueil p { line-height: 1.4; color: #ccc; }
+</style>
+</head>
+<body>
+<video id="video" playsinline muted autoplay></video>
+<canvas id="masque"></canvas>
+<div id="haut"><span id="infos">…</span><span id="version">web 0.1</span></div>
+<div id="message">…</div>
+<div id="bas">
+  <canvas id="cadran" width="360" height="360"></canvas>
+  <div id="droite"><div id="photos">0 photo</div><button id="bouton">Démarrer</button></div>
+</div>
+
+<div id="accueil">
+  <h2>Capture EEG (version web)</h2>
+  <p>Prise de vue guidée pour reconstruire le casque EEG en 3D. Tout reste sur le téléphone :
+     aucune image n'est envoyée sur internet.</p>
+  <p>Garde la tête dans la zone claire, tourne lentement autour, et remplis le cadran
+     (centre = sommet, bord = sous le menton et la nuque, haut = face).</p>
+  <label>Photos par secteur <input id="pps" type="number" value="3" min="1" max="10"></label>
+  <label>Vitesse max (°/s) <input id="vmax" type="number" value="30" min="5" max="300"></label>
+  <label>Zone claire (% de la largeur) <input id="zone" type="number" value="80" min="30" max="100"></label>
+  <label>Intervalle entre photos (s) <input id="interv" type="number" value="0.5" step="0.1" min="0.2"></label>
+  <button id="ouvrir">Ouvrir la caméra</button>
+  <p id="erreur" style="color:#f88"></p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
+<script>
+"use strict";
+// Mode « capteurs » (sans suivi AR) : la position de la caméra autour de la tête est déduite de
+// l'orientation du téléphone, en supposant qu'il vise le centre de la tête. Mêmes secteurs que SPEC.md.
+const $ = id => document.getElementById(id);
+const D = Math.PI / 180;
+const BANDES = [[-30, 0, 12], [0, 30, 12], [30, 60, 8], [60, 90.1, 4]];  // élévation min, max, nb de secteurs
+const NSECT = BANDES.reduce((s, b) => s + b[2], 0);
+
+let R = { pps: 3, vmax: 30, zone: 0.8, interv: 0.5 };
+let piste = null, orient = null, vitesse = 0, lentDepuis = 0, infosCam = "";
+let etat = "pret";  // pret | capture | export
+let az0 = 0, compte = new Array(NSECT).fill(0), photos = [], journal = [], nettetes = [];
+let derniere = 0, capturant = false, debut = null, fichierExport = null;
+
+function dire(m, alerte) {
+  const e = $("message");
+  if (e.textContent !== m) e.textContent = m;
+  e.classList.toggle("alerte", alerte);
+}
+
+// axe optique de la caméra arrière dans le repère monde W3C (x est, y nord, z haut) : R(alpha,beta,gamma)·(0,0,−1)
+function axe(o) {
+  const a = o.alpha * D, b = o.beta * D, g = o.gamma * D;
+  const cA = Math.cos(a), sA = Math.sin(a), cB = Math.cos(b), sB = Math.sin(b), cG = Math.cos(g), sG = Math.sin(g);
+  return [-(cG * sA * sB + cA * sG), -(sA * sG - cA * cG * sB), -(cB * cG)];
+}
+// [élévation, azimut relatif] de la caméra vue du centre de la tête (direction centre → caméra = −axe)
+function angles(o) {
+  const v = axe(o);
+  const elev = Math.asin(Math.max(-1, Math.min(1, -v[2]))) / D;
+  let az = (Math.atan2(-v[0], -v[1]) / D - az0) % 360;
+  if (az < 0) az += 360;
+  return [elev, az];
+}
+function secteur([e, az]) {
+  let d = 0;
+  for (const [mn, mx, n] of BANDES) {
+    if (e >= mn && e < mx) return d + Math.min(n - 1, Math.floor(az / 360 * n));
+    d += n;
+  }
+  return -1;
+}
+
+async function exposition() {
+  const c = piste.getCapabilities ? piste.getCapabilities() : {};
+  let expo = "exposition auto";
+  if (c.exposureMode && c.exposureMode.includes("manual") && c.exposureTime) {
+    try {  // exposureTime en unités de 100 µs : 1/250 s = 40
+      const adv = { exposureMode: "manual", exposureTime: Math.min(c.exposureTime.max, Math.max(c.exposureTime.min, 40)) };
+      if (c.iso) adv.iso = Math.min(c.iso.max, Math.max(c.iso.min, 400));
+      await piste.applyConstraints({ advanced: [adv] });
+      expo = `1/${Math.round(10000 / adv.exposureTime)} s` + (adv.iso ? ` ISO ${adv.iso}` : "");
+    } catch (e) { expo = "exposition manuelle refusée"; }
+  }
+  const v = $("video");
+  infosCam = `${v.videoWidth}×${v.videoHeight} · ${expo}`;
+}
+
+$("ouvrir").onclick = async () => {
+  try {
+    R = { pps: +$("pps").value, vmax: +$("vmax").value, zone: +$("zone").value / 100, interv: +$("interv").value };
+    // iOS : autorisation des capteurs, à demander dans le geste de l'utilisateur
+    if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
+      if (await DeviceOrientationEvent.requestPermission() !== "granted") throw new Error("capteurs d'orientation refusés");
+      if (DeviceMotionEvent.requestPermission) await DeviceMotionEvent.requestPermission();
+    }
+    addEventListener("deviceorientation", e => {
+      if (e.alpha !== null) orient = { alpha: e.alpha, beta: e.beta, gamma: e.gamma };
+    });
+    addEventListener("devicemotion", e => {
+      const r = e.rotationRate;
+      if (r && r.alpha !== null) vitesse = 0.7 * vitesse + 0.3 * Math.hypot(r.alpha, r.beta, r.gamma);
+    });
+    const flux = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
+    $("video").srcObject = flux;
+    piste = flux.getVideoTracks()[0];
+    await $("video").play();
+    await exposition();
+    try { await navigator.wakeLock?.request("screen"); } catch (e) {}
+    $("accueil").style.display = "none";
+    dire("Face au visage, tête dans la zone claire, puis Démarrer", false);
+    requestAnimationFrame(boucle);
+  } catch (e) {
+    $("erreur").textContent = "Erreur : " + e.message;
+  }
+};
+
+$("bouton").onclick = async () => {
+  if (etat === "pret") {
+    if (!orient) { dire("Capteurs muets : bouge un peu le téléphone", true); return; }
+    az0 = 0;
+    az0 = angles(orient)[1];  // azimut 0 = face, au départ
+    compte.fill(0); photos = []; journal = []; nettetes = []; debut = new Date();
+    $("photos").textContent = "0 photo";
+    etat = "capture"; $("bouton").textContent = "Terminer"; $("bouton").className = "stop";
+  } else if (etat === "capture") {
+    etat = "export"; $("bouton").textContent = "…"; $("bouton").className = "";
+    await preparerExport();
+    $("bouton").textContent = "Enregistrer"; $("bouton").className = "export";
+  } else if (etat === "export") {
+    await partager();
+  }
+};
+
+function boucle(t) {
+  requestAnimationFrame(boucle);
+  dessinerMasque();
+  const pos = orient && etat === "capture" ? angles(orient) : null;
+  dessinerCadran(pos);
+  $("infos").textContent = infosCam + (orient ? "" : " · capteurs muets");
+  if (etat !== "capture") return;
+  if (vitesse > R.vmax) { lentDepuis = t; dire("Trop vite", true); return; }
+  const s = secteur(pos);
+  if (s < 0) { dire("Trop bas : remonte", true); return; }
+  const manquants = compte.filter(c => c < R.pps).length;
+  if (compte[s] >= R.pps) {
+    dire(manquants ? `Zone couverte : va vers le rouge (${manquants} secteurs)` : "Couverture complète ✓ tu peux terminer", false);
+    return;
+  }
+  dire(`Tête dans la zone claire, continue doucement (${manquants} secteurs)`, false);
+  if (!capturant && t - lentDepuis > 250 && (t - derniere) / 1000 >= R.interv) {
+    derniere = t;
+    capturer(s, pos);
+  }
+}
+
+// netteté = variance du laplacien sur le centre de l'image, réduit à 256 px
+const petit = document.createElement("canvas"), grand = document.createElement("canvas");
+function nettete(d, n) {
+  const g = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) g[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2];
+  let s = 0, s2 = 0, m = 0;
+  for (let y = 1; y < n - 1; y++) for (let x = 1; x < n - 1; x++) {
+    const i = y * n + x, l = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - n] - g[i + n];
+    s += l; s2 += l * l; m++;
+  }
+  return s2 / m - (s / m) ** 2;
+}
+const mediane = a => a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : 0;
+
+async function capturer(s, pos) {
+  capturant = true;
+  try {
+    const v = $("video"), W = v.videoWidth, H = v.videoHeight, n = 256, cote = Math.min(W, H) * 0.6;
+    if (!W || !H) return;  // flux pas encore prêt
+    petit.width = petit.height = n;
+    const cx = petit.getContext("2d", { willReadFrequently: true });
+    cx.drawImage(v, (W - cote) / 2, (H - cote) / 2, cote, cote, 0, 0, n, n);
+    const net = nettete(cx.getImageData(0, 0, n, n).data, n);
+    if (nettetes.length >= 5 && net < 0.5 * mediane(nettetes)) return;  // floue : on attend la suivante
+    nettetes.push(net);
+    grand.width = W; grand.height = H;
+    grand.getContext("2d").drawImage(v, 0, 0);
+    const blob = await new Promise(r => grand.toBlob(r, "image/jpeg", 0.92));
+    const nom = `img_${String(photos.length + 1).padStart(4, "0")}.jpg`;
+    photos.push([nom, blob]);
+    compte[s]++;
+    journal.push({ image: nom, t_ms: Math.round(performance.now()), largeur: W, hauteur: H,
+      alpha: orient.alpha, beta: orient.beta, gamma: orient.gamma,
+      elevation: +pos[0].toFixed(1), azimut: +pos[1].toFixed(1), secteur: s,
+      nettete: +net.toFixed(1), vitesse_deg_s: +vitesse.toFixed(1) });
+    navigator.vibrate?.(30);
+    $("photos").textContent = `${photos.length} photos`;
+  } finally {
+    capturant = false;
+  }
+}
+
+function horodatage(d) {
+  const p = x => String(x).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+async function preparerExport() {
+  dire("Préparation du fichier…", false);
+  const dossier = `capture_${horodatage(debut)}`, fichiers = {}, enc = new TextEncoder();
+  for (const [nom, blob] of photos) fichiers[`${dossier}/${nom}`] = [new Uint8Array(await blob.arrayBuffer()), { level: 0 }];
+  fichiers[`${dossier}/poses.jsonl`] = enc.encode(journal.map(j => JSON.stringify(j)).join("\n") + "\n");
+  fichiers[`${dossier}/session.json`] = enc.encode(JSON.stringify({
+    version_app: "web 0.1", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
+    convention: "Mode capteurs, sans suivi AR. alpha, beta, gamma : DeviceOrientationEvent (degrés, repère W3C " +
+      "x est, y nord, z haut ; alpha relatif sur iOS). elevation, azimut : position de la caméra vue du centre de " +
+      "la tête, déduite de l'axe optique en supposant que la caméra vise ce centre ; azimut 0 = face au départ.",
+  }, null, 2));
+  fichierExport = new File([fflate.zipSync(fichiers, { level: 0 })], `${dossier}.zip`, { type: "application/zip" });
+  dire(`${photos.length} photos prêtes : touche Enregistrer`, false);
+}
+
+async function partager() {
+  const f = fichierExport;
+  if (navigator.canShare && navigator.canShare({ files: [f] })) {
+    try { await navigator.share({ files: [f] }); dire(`Enregistré : ${f.name}`, false); finir(); return; }
+    catch (e) { if (e.name === "AbortError") return; }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(f); a.download = f.name; a.click();
+  dire(`Téléchargé : ${f.name}`, false);
+  finir();
+}
+function finir() {
+  etat = "pret"; $("bouton").textContent = "Démarrer"; $("bouton").className = "";
+}
+
+function dessinerMasque() {
+  const c = $("masque"), w = innerWidth, h = innerHeight, dpr = devicePixelRatio || 1;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const x = c.getContext("2d"), r = Math.min(w, h) * R.zone / 2;
+  x.setTransform(dpr, 0, 0, dpr, 0, 0);
+  x.clearRect(0, 0, w, h);
+  x.fillStyle = "rgba(0,0,0,.55)";
+  x.beginPath(); x.rect(0, 0, w, h); x.arc(w / 2, h / 2, r, 0, 2 * Math.PI); x.fill("evenodd");
+  x.strokeStyle = "rgba(255,255,255,.85)"; x.lineWidth = 2;
+  x.beginPath(); x.arc(w / 2, h / 2, r, 0, 2 * Math.PI); x.stroke();
+}
+
+// cadran vu du dessus : centre = sommet, bord = 30° sous l'horizontale, haut = face ; rouge → vert
+function dessinerCadran(pos) {
+  const c = $("cadran"), x = c.getContext("2d"), S = c.width, C = S / 2, Rr = C - 14;
+  const rayon = e => (90 - Math.min(e, 90)) / 120 * Rr;
+  const pt = (r, deg) => [C + r * Math.cos(deg * D), C + r * Math.sin(deg * D)];
+  x.clearRect(0, 0, S, S);
+  let d = 0;
+  for (const [mn, mx, n] of BANDES) {
+    for (let k = 0; k < n; k++) {
+      const a0 = k * 360 / n - 90, a1 = (k + 1) * 360 / n - 90;
+      x.beginPath();
+      for (let i = 0; i <= 8; i++) { const p = pt(rayon(mx), a0 + (a1 - a0) * i / 8); i ? x.lineTo(...p) : x.moveTo(...p); }
+      for (let i = 8; i >= 0; i--) x.lineTo(...pt(rayon(mn), a0 + (a1 - a0) * i / 8));
+      x.closePath();
+      const f = Math.min(1, compte[d + k] / R.pps);
+      x.fillStyle = `hsla(${f * 120}, 85%, 45%, .8)`; x.fill();
+      x.strokeStyle = "rgba(255,255,255,.6)"; x.lineWidth = 1.5; x.stroke();
+    }
+    d += n;
+  }
+  x.fillStyle = "#fff"; x.font = "22px sans-serif"; x.textAlign = "center"; x.fillText("face", C, 14);
+  if (pos) {
+    const p = pt(Math.min(rayon(pos[0]), Rr + 8), pos[1] - 90);
+    x.beginPath(); x.arc(p[0], p[1], 10, 0, 2 * Math.PI); x.fill();
+  }
+}
+</script>
+</body>
+</html>
