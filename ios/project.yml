@@ -1,0 +1,33 @@
+# Projet Xcode généré par XcodeGen (pas de .xcodeproj versionné) : xcodegen generate
+name: CaptureEEG
+options:
+  bundleIdPrefix: io.github.maximebedoin
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  CaptureEEG:
+    type: application
+    platform: iOS
+    sources: [App]
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Capture EEG
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        NSCameraUsageDescription: "La caméra photographie la tête pour reconstruire les positions des électrodes. Les photos restent sur le téléphone."
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arkit]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.maximebedoin.captureeeg
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+schemes:
+  CaptureEEG:
+    build:
+      targets:
+        CaptureEEG: all

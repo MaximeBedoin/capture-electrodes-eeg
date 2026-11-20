@@ -1,0 +1,37 @@
+# Compile l'app iOS sans signature (.ipa) à chaque envoi sur main, et la publie dans la release « ios-dernier ».
+# L'.ipa est ensuite signé et installé sur le téléphone par SideStore ou AltStore (identifiant Apple gratuit).
+name: iOS
+on:
+  push:
+    branches: [main]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  compiler:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Générer le projet Xcode
+        run: brew install xcodegen && cd ios && xcodegen generate
+      - name: Compiler
+        run: |
+          cd ios
+          xcodebuild -project CaptureEEG.xcodeproj -scheme CaptureEEG -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/CaptureEEG.app Payload/
+          zip -qr CaptureEEG.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CaptureEEG-ipa
+          path: ios/CaptureEEG.ipa
+      - name: Publier dans la release ios-dernier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ios-dernier --yes --cleanup-tag || true
+          gh release create ios-dernier ios/CaptureEEG.ipa --prerelease --title "iOS : dernière compilation" \
+            --notes "Compilé depuis ${GITHUB_SHA::7}. Non signé : installer avec SideStore ou AltStore."
