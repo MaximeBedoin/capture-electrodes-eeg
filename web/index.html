@@ -153,6 +153,8 @@ async function exposition() {
   infosCam = `${v.videoWidth}×${v.videoHeight} · ${expo}`;
 }
 
+addEventListener("pagehide", () => piste?.stop());  // libère la caméra au rechargement ou à la fermeture
+
 $("ouvrir").onclick = async () => {
   // 27/11 : un 2e appui pendant le réglage d'exposition (~3 s) relançait le flux et cassait play()
   if ($("ouvrir").disabled) return;
@@ -181,7 +183,10 @@ $("ouvrir").onclick = async () => {
     v.srcObject = flux;
     piste = flux.getVideoTracks()[0];
     try { await v.play(); } catch (e) { if (e.name !== "AbortError") throw e; }  // autoplay peut interrompre play()
-    if (!v.videoWidth) await new Promise(r => v.addEventListener("loadedmetadata", r, { once: true }));
+    if (!v.videoWidth) await new Promise((ok, ko) => {
+      v.addEventListener("loadedmetadata", ok, { once: true });
+      setTimeout(() => ko(new Error("pas d'image : caméra occupée par un autre onglet ou une autre app ? Ferme-les et recharge.")), 6000);
+    });
     await exposition();
     try { await navigator.wakeLock?.request("screen"); } catch (e) {}
     $("accueil").style.display = "none";
