@@ -7,6 +7,7 @@
 
     <application
         android:label="Capture EEG"
+        android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <!-- portrait verrouillé : une seule orientation d'image pour COLMAP (camera_mode SINGLE) -->
