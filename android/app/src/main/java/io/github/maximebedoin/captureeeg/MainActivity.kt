@@ -121,6 +121,22 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sm = getSystemService(SENSOR_SERVICE) as SensorManager
         lireReglages()
         construireVues()
+        // retour : de la caméra aux paramètres ; pendant une prise, on ne quitte pas (photos perdues)
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                when {
+                    accueil.visibility == View.VISIBLE -> { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true }
+                    etat == Etat.CAPTURE -> dire("Prise en cours : touche Terminer d'abord", true)
+                    etat == Etat.EXPORT -> {}
+                    else -> {
+                        ProcessCameraProvider.getInstance(this@MainActivity).get().unbindAll()
+                        imageCapture = null
+                        erreur.text = ""
+                        accueil.visibility = View.VISIBLE
+                    }
+                }
+            }
+        })
     }
 
     override fun onResume() {
