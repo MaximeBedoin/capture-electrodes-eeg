@@ -81,6 +81,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var vitesse = 0.0  // °/s, lissée
     private var accel = 0.0    // m/s² sans la gravité, lissée
     private var lentDepuis = 0L
+    // mode sans gyroscope (pas de capteur de rotation) : inclinaison par la gravité, tour par petits pas
+    private var sansGyro = false
+    private val gravite = FloatArray(3)      // accéléromètre filtré passe-bas
+    private var gPrec: DoubleArray? = null   // direction de la gravité à l'échantillon précédent
+    private var tPrecNs = 0L
+    private var bouge = true                 // déplacé depuis la dernière photo gardée
 
     // caméra
     private var imageCapture: ImageCapture? = null
@@ -143,8 +149,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         super.onResume()
         // rotation « jeu » : sans magnétomètre (le casque et ses câbles le perturberaient), dérive lente en azimut
         val rot = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR) ?: sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-        for (s in listOf(rot, sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE), sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)))
-            s?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        sansGyro = rot == null
+        val liste = if (sansGyro) listOf(sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER))
+            else listOf(rot, sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE), sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION))
+        for (s in liste) s?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         Choreographer.getInstance().postFrameCallback(boucle)
     }
 
@@ -164,6 +172,25 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             Sensor.TYPE_GYROSCOPE -> {
                 val w = Math.toDegrees(sqrt((e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]).toDouble()))
                 vitesse = 0.7 * vitesse + 0.3 * w
+            }
+            Sensor.TYPE_ACCELEROMETER -> {
+                // gravité = passe-bas ; mouvement = écart à la gravité ; « vitesse » = vitesse de basculement
+                // de la gravité (rotations autour des 2 axes horizontaux seulement : le lacet est invisible)
+                for (i in 0..2) gravite[i] = 0.85f * gravite[i] + 0.15f * e.values[i]
+                val d = sqrt((0..2).sumOf { ((e.values[it] - gravite[it]) * (e.values[it] - gravite[it])).toDouble() })
+                accel = 0.7 * accel + 0.3 * d
+                val n = sqrt((0..2).sumOf { (gravite[it] * gravite[it]).toDouble() })
+                if (n > 1) {
+                    val u = DoubleArray(3) { gravite[it] / n }
+                    gPrec?.let { p ->
+                        val dt = (e.timestamp - tPrecNs) / 1e9
+                        if (dt > 0) {
+                            val ang = Math.toDegrees(kotlin.math.acos((u[0] * p[0] + u[1] * p[1] + u[2] * p[2]).coerceIn(-1.0, 1.0)))
+                            vitesse = 0.7 * vitesse + 0.3 * ang / dt
+                        }
+                    }
+                    gPrec = u; tPrecNs = e.timestamp
+                }
             }
             Sensor.TYPE_LINEAR_ACCELERATION -> {
                 val a = sqrt((e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]).toDouble())
@@ -324,7 +351,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 imageCapture = ic
                 ic.resolutionInfo?.resolution?.let { taille = "${min(it.width, it.height)}×${max(it.width, it.height)}" }
                 accueil.visibility = View.GONE
-                dire("En portrait, face au visage, la tête remplit la zone claire, puis Démarrer", false)
+                dire(if (sansGyro) "Pas de gyroscope : tour par petits pas, une photo par arrêt. Face au visage, puis Démarrer"
+                     else "En portrait, face au visage, la tête remplit la zone claire, puis Démarrer", false)
             } catch (e: Exception) {
                 erreur.text = "Erreur caméra : ${e.message}"
             }
@@ -338,8 +366,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun appui() {
         when (etat) {
             Etat.PRET -> {
-                val o = orient ?: run { dire("Capteurs muets : bouge un peu le téléphone", true); return }
-                az0 = o.anglesAbsolus()[1]  // azimut 0 = face, au départ
+                if (sansGyro) {
+                    if (gPrec == null) { dire("Accéléromètre muet : bouge un peu le téléphone", true); return }
+                    mouvementMs = 0; bouge = true
+                } else {
+                    val o = orient ?: run { dire("Capteurs muets : bouge un peu le téléphone", true); return }
+                    az0 = o.anglesAbsolus()[1]  // azimut 0 = face, au départ
+                }
                 secteurs = Array(NSECT) { mutableListOf() }; nPris = 0; remplacees = 0; debut = Date()
                 dossier = File(cacheDir, "capture_${horodatage(debut)}").apply { deleteRecursively(); mkdirs() }
                 compteur.text = "0 photo"
@@ -359,10 +392,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             Choreographer.getInstance().postFrameCallback(this)
             val t = SystemClock.uptimeMillis()
             val o = orient
-            val pos = if (o != null && etat == Etat.CAPTURE) anglesRelatifs(o, az0) else null
+            val pos = when {
+                etat != Etat.CAPTURE -> null
+                sansGyro -> if (gPrec != null) positionSansGyro() else null
+                o != null -> anglesRelatifs(o, az0)
+                else -> null
+            }
             cadran.position = pos; cadran.invalidate()
-            if (imageCapture != null) infos.text = "$taille · ${texteExpo()}" + if (o == null) " · capteurs muets" else ""
+            if (imageCapture != null) infos.text = "$taille · ${texteExpo()}" + when {
+                sansGyro -> " · sans gyroscope · bascule %.0f°/s · mvt %.2f".format(Locale.US, vitesse, accel)
+                o == null -> " · capteurs muets"
+                else -> ""
+            }
             if (etat != Etat.CAPTURE || pos == null) return
+            if (sansGyro) { pasSansGyro(t, pos); return }
             // photo seulement téléphone immobile (rotation ET accélération faibles) depuis au moins 0,4 s
             if (vitesse > R.vmax || accel > R.amax) lentDepuis = t
             if (vitesse > 3 * R.vmax) { dire("Trop vite", true); return }
@@ -377,20 +420,69 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
             if (!capturant && t - lentDepuis > 400 && (t - derniere) / 1000.0 >= R.interv) {
                 derniere = t
-                capturer(s, pos, o!!, plein)
+                capturer(s, pos, plein)
             }
         }
     }
 
-    private fun capturer(s: Int, pos: DoubleArray, o: Orientation, plein: Boolean) {
+    // ------------------------------------------------ mode sans gyroscope
+    // Sans azimut, l'app ne sait pas où on est autour de la tête : on fait le tour par petits pas réguliers,
+    // toujours dans le même sens, une photo par arrêt. Le cadran se remplit dans l'ordre des pas.
+    private var mouvementMs = 0L
+    private var tPrecBoucle = 0L
+    private val AMAX_SANS_GYRO = 0.25  // m/s², écart à la gravité filtrée (accéléromètre brut, plus bruité)
+
+    /** [élévation, azimut supposé du prochain pas] */
+    private fun positionSansGyro(): DoubleArray {
+        val e = Inclinaison(gravite.copyOf()).elevation
+        val b = bandeDeElevation(e)
+        if (b < 0) return doubleArrayOf(e, 0.0)
+        val d0 = debutBande(b); val n = BANDES[b].n; val pps = R.cible(d0)
+        val faits = (d0 until d0 + n).sumOf { secteurs[it].size }
+        return doubleArrayOf(e, (faits + 0.5) / (n * pps) * 360)
+    }
+
+    private fun pasSansGyro(t: Long, pos: DoubleArray) {
+        val dt = if (tPrecBoucle > 0) t - tPrecBoucle else 0; tPrecBoucle = t
+        val agite = vitesse > R.vmax || accel > AMAX_SANS_GYRO
+        if (agite) { lentDepuis = t; mouvementMs += dt }
+        if (mouvementMs > 700) bouge = true  // au moins 0,7 s de mouvement depuis la dernière photo = un pas
+        val b = bandeDeElevation(pos[0])
+        if (b < 0) { dire("Trop bas : remonte", true); return }
+        val d0 = debutBande(b); val n = BANDES[b].n; val pps = R.cible(d0)
+        val faits = (d0 until d0 + n).sumOf { secteurs[it].size }
+        val total = n * pps
+        val incompletes = BANDES.indices.count { i -> (debutBande(i) until debutBande(i) + BANDES[i].n).sumOf { secteurs[it].size } < BANDES[i].n * R.cible(debutBande(i)) }
+        val nomBande = "${BANDES[b].min.roundToInt()}° à ${min(90, BANDES[b].max.roundToInt())}°"
+        when {
+            faits >= total -> dire(if (incompletes > 0) "Bande $nomBande finie : incline vers une bande rouge" else "Couverture complète ✓ tu peux terminer", false)
+            !bouge -> dire("Photo $faits/$total ✓ fais un petit pas sur le côté, toujours dans le même sens", false)
+            t - lentDepuis < 600 -> dire("Arrête-toi : immobile une demi-seconde", false)
+            else -> dire("Bande $nomBande : photo ${faits + 1}/$total", false)
+        }
+        if (faits < total && bouge && !capturant && t - lentDepuis > 600 && (t - derniere) / 1000.0 >= R.interv) {
+            derniere = t
+            capturer(d0 + faits / pps, pos, false)
+        }
+    }
+
+    private fun capturer(s: Int, pos: DoubleArray, plein: Boolean) {
         val ic = imageCapture ?: return
         capturant = true
         // pose et mouvement relevés au déclenchement, pas à l'arrivée de l'image
         val j = JSONObject().apply {
             put("t_ms", SystemClock.uptimeMillis())
-            put("alpha", o.alpha); put("beta", o.beta); put("gamma", o.gamma)
-            put("R_tel_vers_monde", org.json.JSONArray(o.m.map { it.toDouble() }))
-            put("elevation", (pos[0] * 10).roundToInt() / 10.0); put("azimut", (pos[1] * 10).roundToInt() / 10.0)
+            if (sansGyro) {
+                val inc = Inclinaison(gravite.copyOf())
+                put("mode", "sans_gyroscope")
+                put("alpha", JSONObject.NULL); put("beta", inc.beta); put("gamma", inc.gamma)
+                put("elevation", (pos[0] * 10).roundToInt() / 10.0); put("azimut", JSONObject.NULL)
+            } else {
+                val o = orient!!
+                put("alpha", o.alpha); put("beta", o.beta); put("gamma", o.gamma)
+                put("R_tel_vers_monde", org.json.JSONArray(o.m.map { it.toDouble() }))
+                put("elevation", (pos[0] * 10).roundToInt() / 10.0); put("azimut", (pos[1] * 10).roundToInt() / 10.0)
+            }
             put("secteur", s)
             put("vitesse_deg_s", (vitesse * 10).roundToInt() / 10.0); put("accel_m_s2", (accel * 100).roundToInt() / 100.0)
             put("exposition_s", expoNs / 1e9); put("iso", iso)
@@ -424,7 +516,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // comparaison dans le même secteur (même point de vue, même contenu) ; on n'écrit que si on garde
         val L = secteurs[s].toList()
         val pire = L.minByOrNull { it.net }
-        if (plein) { if (pire == null || net < 1.15 * pire.net) return }
+        if (sansGyro) {
+            // pas de photo du même point de vue pour comparer : on compare à la médiane de la bande
+            val b = bandeDe(s)
+            val nb = (debutBande(b) until debutBande(b) + BANDES[b].n).flatMap { secteurs[it] }.map { it.net }.sorted()
+            if (nb.size >= 3 && net < 0.6 * nb[nb.size / 2]) { runOnUiThread { dire("Photo floue : reste immobile", true) }; return }
+        }
+        else if (plein) { if (pire == null || net < 1.15 * pire.net) return }
         else if (L.isNotEmpty() && net < 0.6 * L.maxOf { it.net }) return
 
         nPris++
@@ -445,6 +543,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         runOnUiThread {
             val M = secteurs[s]
             if (plein && pire != null && M.contains(pire)) { M[M.indexOf(pire)] = p; pire.fichier.delete(); remplacees++ } else M.add(p)
+            if (sansGyro) { mouvementMs = 0; bouge = false }
             bouton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             val total = secteurs.sumOf { it.size }
             compteur.text = "$total photos" + if (remplacees > 0) "\n($remplacees remplacées)" else ""
@@ -462,6 +561,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val session = JSONObject().apply {
                 put("version_app", VERSION)
                 put("appareil", "${Build.MANUFACTURER} ${Build.MODEL}"); put("android", Build.VERSION.RELEASE)
+                put("mode", if (sansGyro) "sans_gyroscope (accéléromètre seul : élévation, beta, gamma ; ni alpha ni azimut ; secteur = rang du pas dans la bande)" else "capteurs")
                 put("camera", "$taille · ${texteExpo()}")
                 put("reglages", JSONObject().apply {
                     put("pps", R.pps); put("ppsBas", R.ppsBas); put("vmax", R.vmax); put("amax", R.amax)

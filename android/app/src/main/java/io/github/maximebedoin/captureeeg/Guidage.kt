@@ -4,6 +4,7 @@ import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.floor
 import kotlin.math.min
+import kotlin.math.sqrt
 
 // Même découpage et mêmes règles que la web app 0.6 et SPEC.md.
 // Mode « capteurs » (sans suivi AR) : la position de la caméra autour de la tête est déduite de
@@ -48,6 +49,25 @@ class Orientation(val m: FloatArray) {
         return doubleArrayOf(elev, az)
     }
 }
+
+/**
+ * Mode sans gyroscope (ex. Galaxy A05s : accéléromètre seul) : la gravité donne l'inclinaison,
+ * pas l'azimut. g = accéléromètre filtré passe-bas, repère téléphone (pointe vers le haut au repos).
+ * Haut du monde dans le repère téléphone = g/|g| = (−cos b sin g, sin b, cos b cos g) en angles W3C.
+ */
+class Inclinaison(g: FloatArray) {
+    private val n = sqrt((g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).toDouble())
+    private val u = DoubleArray(3) { g[it] / n }
+    val beta get() = Math.toDegrees(asin(u[1].coerceIn(-1.0, 1.0)))
+    val gamma get() = Math.toDegrees(atan2(-u[0], u[2]))
+    /** élévation de la caméra vue du centre de la tête : axe optique (0,0,−1) → asin(−axe·haut) = asin(u_z) */
+    val elevation get() = Math.toDegrees(asin(u[2].coerceIn(-1.0, 1.0)))
+}
+
+/** première case et nombre de secteurs de la bande b */
+fun debutBande(b: Int) = BANDES.take(b).sumOf { it.n }
+fun bandeDe(s: Int): Int { var d = 0; for ((i, b) in BANDES.withIndex()) { d += b.n; if (s < d) return i }; return -1 }
+fun bandeDeElevation(e: Double) = BANDES.indexOfFirst { e >= it.min && e < it.max }
 
 fun anglesRelatifs(o: Orientation, az0: Double): DoubleArray {
     val (e, a) = o.anglesAbsolus()
