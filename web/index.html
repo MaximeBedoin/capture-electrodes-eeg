@@ -145,7 +145,7 @@ async function exposition() {
       }
       if (lum < 90) {
         await piste.applyConstraints({ advanced: [{ exposureMode: "continuous" }] });
-        expo = "exposition auto (trop sombre en manuel)";
+        expo = "exposition auto";
       }
     } catch (e) { expo = "exposition manuelle refusée"; }
   }
