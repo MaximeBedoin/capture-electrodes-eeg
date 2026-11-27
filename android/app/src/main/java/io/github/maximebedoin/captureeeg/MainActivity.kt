@@ -240,7 +240,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         setContentView(racine)
     }
 
-    private fun fmt(x: Double) = if (x == x.roundToInt().toDouble()) x.roundToInt().toString() else x.toString()
+    // 2 décimales au plus : les réglages passent par des Float (80 % relu « 80.000001 »)
+    private fun fmt(x: Double) = "%.2f".format(Locale.US, x).trimEnd('0').trimEnd('.')
 
     private fun lireReglages() {
         val p = getPreferences(MODE_PRIVATE)
