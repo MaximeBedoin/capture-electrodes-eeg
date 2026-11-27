@@ -3,3 +3,8 @@ ios/*.xcodeproj/
 ios/Payload/
 *.ipa
 .DS_Store
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/
