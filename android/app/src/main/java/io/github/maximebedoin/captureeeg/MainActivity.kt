@@ -237,6 +237,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         col.addView(erreur)
         accueil.addView(col)
         racine.addView(accueil, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        // Android 15 : l'app passe sous les barres système ; on décale le bandeau et le bas
+        // de la hauteur de la barre d'état et des boutons de navigation
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(racine) { _, ins ->
+            val b = ins.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars() or
+                androidx.core.view.WindowInsetsCompat.Type.displayCutout())
+            haut.setPadding(dp(12), b.top + dp(6), dp(12), dp(6))
+            (message.layoutParams as FrameLayout.LayoutParams).topMargin = b.top + dp(40)
+            (bas.layoutParams as FrameLayout.LayoutParams).bottomMargin = b.bottom + dp(16)
+            col.setPadding(dp(24), b.top + dp(16), dp(24), b.bottom + dp(24))
+            racine.requestLayout()
+            ins
+        }
         setContentView(racine)
     }
 
