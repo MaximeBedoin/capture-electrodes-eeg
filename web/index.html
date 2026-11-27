@@ -34,7 +34,7 @@
 <body>
 <video id="video" playsinline muted autoplay></video>
 <canvas id="masque"></canvas>
-<div id="haut"><span id="infos">…</span><span id="version">web 0.5</span></div>
+<div id="haut"><span id="infos">…</span><span id="version">web 0.6</span></div>
 <div id="message">…</div>
 <div id="bas">
   <canvas id="cadran" width="360" height="360"></canvas>
@@ -112,15 +112,41 @@ function secteur([e, az]) {
   return -1;
 }
 
+// luminance moyenne (0-255) de l'image vidéo, réduite à 64 px
+function luminance() {
+  const v = $("video"), cv = document.createElement("canvas");
+  cv.width = cv.height = 64;
+  const cx = cv.getContext("2d");
+  cx.drawImage(v, 0, 0, 64, 64);
+  const d = cx.getImageData(0, 0, 64, 64).data;
+  let s = 0;
+  for (let i = 0; i < d.length; i += 4) s += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  return s / (d.length / 4);
+}
+
 async function exposition() {
   const c = piste.getCapabilities ? piste.getCapabilities() : {};
   let expo = "exposition auto";
   if (c.exposureMode && c.exposureMode.includes("manual") && c.exposureTime) {
+    // 27/11 (Android/Chrome) : 1/250 s ISO 400 fixe donnait une image très sombre en intérieur.
+    // On monte l'ISO puis le temps de pose (jusqu'à 1/100 s) tant que l'image est sombre ; sinon retour en auto.
+    const borne = (x, r) => Math.min(r.max, Math.max(r.min, x));
     try {  // exposureTime en unités de 100 µs : 1/250 s = 40
-      const adv = { exposureMode: "manual", exposureTime: Math.min(c.exposureTime.max, Math.max(c.exposureTime.min, 40)) };
-      if (c.iso) adv.iso = Math.min(c.iso.max, Math.max(c.iso.min, 400));
-      await piste.applyConstraints({ advanced: [adv] });
-      expo = `1/${Math.round(10000 / adv.exposureTime)} s` + (adv.iso ? ` ISO ${adv.iso}` : "");
+      let t = 40, iso = 400, lum = 0;
+      for (let k = 0; k < 6; k++) {
+        const adv = { exposureMode: "manual", exposureTime: borne(t, c.exposureTime) };
+        if (c.iso) adv.iso = borne(iso, c.iso);
+        await piste.applyConstraints({ advanced: [adv] });
+        await new Promise(r => setTimeout(r, 500));
+        lum = luminance();
+        expo = `1/${Math.round(10000 / adv.exposureTime)} s` + (adv.iso ? ` ISO ${adv.iso}` : "");
+        if (lum >= 90) break;
+        if (c.iso && iso < c.iso.max) iso *= 2; else if (t < 100) t = Math.min(100, t * 1.6); else { lum = -1; break; }
+      }
+      if (lum < 90) {
+        await piste.applyConstraints({ advanced: [{ exposureMode: "continuous" }] });
+        expo = "exposition auto (trop sombre en manuel)";
+      }
     } catch (e) { expo = "exposition manuelle refusée"; }
   }
   const v = $("video");
@@ -256,7 +282,7 @@ async function preparerExport() {
   for (const p of photos) fichiers[`${dossier}/${p.nom}`] = [new Uint8Array(await p.blob.arrayBuffer()), { level: 0 }];
   fichiers[`${dossier}/poses.jsonl`] = enc.encode(photos.map(p => JSON.stringify(p.j)).join("\n") + "\n");
   fichiers[`${dossier}/session.json`] = enc.encode(JSON.stringify({
-    version_app: "web 0.5", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
+    version_app: "web 0.6", navigateur: navigator.userAgent, camera: infosCam, reglages: R,
     convention: "Mode capteurs, sans suivi AR. alpha, beta, gamma : DeviceOrientationEvent (degrés, repère W3C " +
       "x est, y nord, z haut ; alpha relatif sur iOS). elevation, azimut : position de la caméra vue du centre de " +
       "la tête, déduite de l'axe optique en supposant que la caméra vise ce centre ; azimut 0 = face au départ.",
